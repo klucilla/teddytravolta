@@ -1,0 +1,37 @@
+# Dependencias (reinstalaveis com npm install)
+node_modules/
+
+# Segredos e configuracao local — NUNCA versionar
+.env
+.env.*
+!.env.example
+
+# Midia local: videos, musicas, imagens e vozes TTS geradas.
+# O repositorio nao distribui midia — crie a sua seguindo docs/criando-as-midias.md
+assets/
+
+# Ferramentas locais (assistente de IA, scripts pessoais de backup)
+.claude/
+claude.md
+CLAUDE.md
+AGENTS.md
+scripts/
+
+# Logs, caches e temporarios
+*.log
+logs/
+cache/
+tmp/
+temp/
+*.bundle
+
+# Sistema operacional
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# IDEs e editores
+.vscode/
+.idea/
+*.suo
+*.user

@@ -1,0 +1,379 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<title>Teddy Travolta — Overlay</title>
+<style>
+  /* Fundo transparente para Browser Source do OBS (1080x1920) */
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body {
+    width: 1080px;
+    height: 1920px;
+    background: transparent;
+    overflow: hidden;
+    font-family: 'Segoe UI', Arial, sans-serif;
+  }
+  body { position: relative; } /* ancora o #stage no palco 1080x1920, não na janela */
+
+  #stage {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    pointer-events: none;
+  }
+
+  /* ===== Card de agradecimento (estilo disco anos 70) ===== */
+  .card {
+    position: absolute;
+    /* Alto o bastante para não cobrir a cabeça do Teddy (mesmo no pulo da comemoração) */
+    top: 110px;
+    left: 50%;
+    width: 880px;
+    padding: 36px 50px 42px;
+    border-radius: 36px;
+    text-align: center;
+    background:
+      radial-gradient(circle at 20% 0%, rgba(255, 0, 200, .35), transparent 55%),
+      radial-gradient(circle at 80% 100%, rgba(0, 200, 255, .35), transparent 55%),
+      linear-gradient(160deg, rgba(20, 8, 40, .94), rgba(45, 10, 60, .94));
+    border: 4px solid transparent;
+    background-clip: padding-box;
+    box-shadow:
+      0 0 0 4px rgba(255, 215, 0, .9),
+      0 0 38px rgba(255, 215, 0, .55),
+      0 0 90px rgba(255, 0, 200, .35),
+      inset 0 0 60px rgba(255, 215, 0, .08);
+    transform: translateX(-50%) scale(0) rotate(-6deg);
+    opacity: 0;
+  }
+  .card.show {
+    animation: cardIn .7s cubic-bezier(.2, 1.6, .35, 1) forwards;
+  }
+  .card.hide {
+    animation: cardOut .5s ease-in forwards;
+  }
+  @keyframes cardIn {
+    0%   { transform: translateX(-50%) scale(0) rotate(-6deg); opacity: 0; }
+    100% { transform: translateX(-50%) scale(1) rotate(0deg);  opacity: 1; }
+  }
+  @keyframes cardOut {
+    0%   { transform: translateX(-50%) scale(1); opacity: 1; }
+    100% { transform: translateX(-50%) scale(.6) translateY(-80px); opacity: 0; }
+  }
+
+  .card .kicker {
+    font-size: 40px;
+    font-weight: 800;
+    letter-spacing: 8px;
+    text-transform: uppercase;
+    color: #ffd700;
+    text-shadow: 0 0 18px rgba(255, 215, 0, .9);
+    margin-bottom: 14px;
+  }
+  .card .nome {
+    font-size: 84px;
+    font-weight: 900;
+    line-height: 1.05;
+    background: linear-gradient(180deg, #fff8d0 0%, #ffd700 45%, #ff9100 100%);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+    filter: drop-shadow(0 4px 0 rgba(120, 50, 0, .8)) drop-shadow(0 0 26px rgba(255, 200, 0, .6));
+    word-break: break-word;
+  }
+  .card .presente {
+    margin-top: 18px;
+    font-size: 52px;
+    font-weight: 700;
+    color: #7dfcff;
+    text-shadow: 0 0 16px rgba(0, 230, 255, .9), 0 0 42px rgba(0, 230, 255, .5);
+  }
+  .card .presente .emoji { font-size: 60px; }
+
+  .card.big {
+    box-shadow:
+      0 0 0 6px rgba(255, 215, 0, 1),
+      0 0 60px rgba(255, 215, 0, .8),
+      0 0 140px rgba(255, 0, 200, .55),
+      inset 0 0 80px rgba(255, 215, 0, .12);
+    animation: cardIn .7s cubic-bezier(.2, 1.6, .35, 1) forwards, pulse 1.2s ease-in-out .8s infinite;
+  }
+  @keyframes pulse {
+    0%, 100% { transform: translateX(-50%) scale(1); }
+    50%      { transform: translateX(-50%) scale(1.035); }
+  }
+
+  /* ===== Banner fixo de instruções (ZONA DE LUZES: abaixo do card, acima da cabeça do urso) ===== */
+  #banner {
+    position: absolute;
+    bottom: 530px;         /* posição original (preferida): faixa inferior sobre a pista */
+    top: auto;
+    left: 50%;
+    transform: translateX(-50%);
+    width: max-content;    /* a pílula abraça o texto; a fonte é ajustada via JS (setBannerText) se passar de 1000px */
+    padding: 20px 46px;
+    border-radius: 999px;
+    z-index: 1;            /* o card é desenhado depois no DOM, então fica por cima se chegarem perto */
+    pointer-events: none;
+    background:
+      radial-gradient(circle at 18% 0%, rgba(255, 0, 200, .30), transparent 60%),
+      radial-gradient(circle at 82% 100%, rgba(0, 200, 255, .28), transparent 60%),
+      linear-gradient(160deg, rgba(20, 8, 40, .92), rgba(45, 10, 60, .92));
+    box-shadow:
+      0 0 0 4px rgba(255, 215, 0, .9),
+      0 0 30px rgba(255, 215, 0, .5),
+      0 0 70px rgba(255, 0, 200, .3),
+      inset 0 0 40px rgba(255, 215, 0, .08);
+    font-size: 40px;
+    font-weight: 800;
+    text-align: center;
+    color: #fff3c4;
+    /* sombra escura SÓLIDA sob o glow dourado: faz o texto "descolar" das luzes de fundo no celular */
+    text-shadow: 0 2px 0 rgba(90, 35, 0, .9), 0 0 16px rgba(255, 215, 0, .85);
+    letter-spacing: 1px;
+    white-space: nowrap;
+    animation: bannerGlow 2.4s ease-in-out infinite;
+  }
+  /* Transição: leve deslize vertical + fade. translateX(-50%) mantido nos dois estados p/ não "pular". */
+  #banner.trocando {
+    opacity: 0;
+    transform: translateX(-50%) translateY(-14px);
+    transition: opacity .5s ease, transform .5s ease;
+  }
+  #banner:not(.trocando) {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0);
+    transition: opacity .5s ease, transform .5s ease;
+  }
+  @keyframes bannerGlow {
+    0%, 100% {
+      box-shadow: 0 0 0 4px rgba(255, 215, 0, .9), 0 0 30px rgba(255, 215, 0, .5), 0 0 70px rgba(255, 0, 200, .3), inset 0 0 40px rgba(255, 215, 0, .08);
+    }
+    50% {
+      box-shadow: 0 0 0 4px rgba(255, 215, 0, 1), 0 0 46px rgba(255, 215, 0, .8), 0 0 100px rgba(255, 0, 200, .5), inset 0 0 50px rgba(255, 215, 0, .12);
+    }
+  }
+
+  /* ===== Barra de meta da live (acima do banner) ===== */
+  #meta {
+    position: absolute;
+    bottom: 648px; /* logo acima do banner de instruções */
+    left: 50%;
+    transform: translateX(-50%);
+    width: 720px;
+    height: 58px;
+    border-radius: 999px;
+    background: linear-gradient(160deg, rgba(20, 8, 40, .9), rgba(45, 10, 60, .9));
+    box-shadow:
+      0 0 0 3px rgba(255, 215, 0, .8),
+      0 0 20px rgba(255, 215, 0, .35),
+      0 0 45px rgba(255, 0, 200, .2);
+    overflow: hidden;
+    display: none; /* aparece quando chega o primeiro meta_progress */
+  }
+  #meta-fill {
+    position: absolute;
+    inset: 0;
+    width: 0%;
+    background: linear-gradient(90deg, rgba(255, 215, 0, .85), rgba(255, 0, 200, .65));
+    transition: width .8s ease;
+  }
+  #meta-label {
+    position: relative;
+    height: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 30px;
+    font-weight: 800;
+    color: #fff3c4;
+    text-shadow: 0 2px 0 rgba(90, 35, 0, .9), 0 0 12px rgba(255, 215, 0, .8);
+    letter-spacing: 1px;
+    white-space: nowrap;
+  }
+
+  /* ===== Confete / brilhos ===== */
+  .sparkle {
+    position: absolute;
+    font-size: 46px;
+    animation: fall linear forwards;
+    will-change: transform, opacity;
+  }
+  @keyframes fall {
+    0%   { transform: translateY(-80px) rotate(0deg); opacity: 1; }
+    85%  { opacity: 1; }
+    100% { transform: translateY(2100px) rotate(720deg); opacity: 0; }
+  }
+</style>
+</head>
+<body>
+<div id="stage">
+  <div id="meta"><div id="meta-fill"></div><div id="meta-label"></div></div>
+  <div id="banner"></div>
+  <div class="card" id="card">
+    <div class="kicker" id="kicker">Presente!</div>
+    <div class="nome" id="nome"></div>
+    <div class="presente" id="presente"></div>
+  </div>
+</div>
+
+<script>
+  const card = document.getElementById('card');
+  const elKicker = document.getElementById('kicker');
+  const elNome = document.getElementById('nome');
+  const elPresente = document.getElementById('presente');
+
+  let hideTimer = null;
+
+  // ===== Banner fixo: instruções em rodízio =====
+  const MENSAGENS = [
+    '🌹 Manda uma rosa e o Teddy fala seu nome!',
+    '🎁 Presente de 100+ coins = festa completa com vinheta!',
+    '➕ Segue o canal e o Teddy te agradece na hora!',
+    '🥃 Compartilha a live e ganha um brinde do Teddy!',
+    '❤️ Manda likes que o Teddy capricha no moonwalk!',
+    '💬 Comenta aí que o Teddy responde você no chat!',
+    '🕺 Teddy Travolta — o urso mais disco do TikTok',
+  ];
+  const banner = document.getElementById('banner');
+  let msgIdx = 0;
+
+  // Define o texto e encolhe a fonte até a pílula caber em 1000px de largura
+  function setBannerText(msg) {
+    banner.textContent = msg;
+    let size = 40;
+    banner.style.fontSize = size + 'px';
+    while (banner.offsetWidth > 1000 && size > 22) {
+      size -= 1;
+      banner.style.fontSize = size + 'px';
+    }
+  }
+
+  setBannerText(MENSAGENS[0]);
+  setInterval(() => {
+    banner.classList.add('trocando');
+    setTimeout(() => {
+      msgIdx = (msgIdx + 1) % MENSAGENS.length;
+      setBannerText(MENSAGENS[msgIdx]);
+      banner.classList.remove('trocando');
+    }, 500);
+  }, 8000);
+
+  function showAnnouncement(a) {
+    // Fala de engajamento no ocioso: é só o Teddy falando, sem card no overlay.
+    if (a.type === 'idle') return;
+    clearTimeout(hideTimer);
+
+    if (a.type === 'gift') {
+      elKicker.textContent = a.big ? '🔥 Presentão! 🔥' : 'Presente!';
+      elPresente.innerHTML = '<span class="emoji">🎁</span> ' + escapeHtml(a.giftName || '') +
+        (a.coins ? ' · ' + a.coins + ' coins' : '');
+    } else if (a.type === 'follow') {
+      elKicker.textContent = 'Novo seguidor!';
+      elPresente.innerHTML = '<span class="emoji">➕</span> entrou pra pista';
+    } else if (a.type === 'share') {
+      elKicker.textContent = 'Compartilhou a live!';
+      elPresente.innerHTML = '<span class="emoji">🥃</span> ganhou um brinde do Teddy';
+    } else if (a.type === 'comment') {
+      elKicker.textContent = 'Respondendo o chat!';
+      elPresente.innerHTML = '<span class="emoji">💬</span> ' + escapeHtml(a.commentText || '');
+    } else if (a.type === 'join') {
+      elKicker.textContent = 'Chegou na pista!';
+      elPresente.innerHTML = '<span class="emoji">👋</span> bem-vindo à festa';
+    } else if (a.type === 'milestone') {
+      elKicker.textContent = '🎉 Pista cheia! 🎉';
+      elPresente.innerHTML = '<span class="emoji">👥</span> espectadores na pista!';
+    } else if (a.type === 'challenge') {
+      elKicker.textContent = '⚡ Desafio-relâmpago! ⚡';
+      elPresente.innerHTML = '<span class="emoji">🏁</span> o primeiro a mandar no chat ganha!';
+    } else if (a.type === 'challenge_win') {
+      elKicker.textContent = '🏆 Campeão do desafio! 🏆';
+      elPresente.innerHTML = '<span class="emoji">⚡</span> foi o mais rápido da pista!';
+    } else if (a.type === 'meta') {
+      elKicker.textContent = '🎯 Meta batida! 🎯';
+      elPresente.innerHTML = '<span class="emoji">🎉</span> valeu, pista! Bora pra próxima!';
+    } else {
+      elKicker.textContent = 'Chuva de likes!';
+      elPresente.innerHTML = '<span class="emoji">🕺</span> moonwalk do Teddy! ' +
+        (a.count ? a.count + ' likes' : '');
+    }
+    // Linha grande: nome da pessoa, número (marco), gatilho (desafio) ou "META!"
+    elNome.textContent =
+      a.type === 'milestone' ? String(a.count || '') :
+      a.type === 'challenge' ? (a.trigger || '⚡') :
+      a.type === 'meta' ? 'META!' :
+      (a.nome || 'amigo');
+
+    card.classList.remove('show', 'hide', 'big');
+    void card.offsetWidth; // reinicia a animação
+    card.classList.add('show');
+    if (a.big) card.classList.add('big');
+
+    sparkles(a.big ? 36 : 14);
+
+    const seconds = a.overlaySeconds || 5;
+    hideTimer = setTimeout(() => {
+      card.classList.remove('show', 'big');
+      card.classList.add('hide');
+    }, seconds * 1000);
+  }
+
+  function sparkles(n) {
+    const symbols = ['✨', '⭐', '💛', '🪩', '💿', '🌟'];
+    for (let i = 0; i < n; i++) {
+      const s = document.createElement('div');
+      s.className = 'sparkle';
+      s.textContent = symbols[Math.floor(Math.random() * symbols.length)];
+      s.style.left = Math.random() * 1040 + 'px';
+      s.style.animationDuration = (2.2 + Math.random() * 2.5) + 's';
+      s.style.animationDelay = (Math.random() * .8) + 's';
+      s.style.fontSize = (30 + Math.random() * 40) + 'px';
+      document.getElementById('stage').appendChild(s);
+      setTimeout(() => s.remove(), 6000);
+    }
+  }
+
+  function escapeHtml(t) {
+    const d = document.createElement('div');
+    d.textContent = t;
+    return d.innerHTML;
+  }
+
+  // ===== Barra de meta da live =====
+  const metaEl = document.getElementById('meta');
+  const metaFill = document.getElementById('meta-fill');
+  const metaLabelEl = document.getElementById('meta-label');
+  function updateMeta(m) {
+    metaEl.style.display = 'block';
+    const pct = Math.max(0, Math.min(100, (m.current / m.target) * 100));
+    metaFill.style.width = pct + '%';
+    metaLabelEl.textContent = m.label || (m.current + '/' + m.target);
+  }
+
+  // ===== WebSocket com reconexão =====
+  function connect() {
+    const ws = new WebSocket('ws://' + location.host);
+    ws.onmessage = (ev) => {
+      try {
+        const data = JSON.parse(ev.data);
+        if (data.type === 'meta_progress') { updateMeta(data); return; }
+        showAnnouncement(data);
+      } catch (e) { console.error(e); }
+    };
+    ws.onclose = () => setTimeout(connect, 2000);
+    ws.onerror = () => ws.close();
+  }
+  connect();
+
+  // Teste manual no navegador: ?demo=1 mostra um card de exemplo
+  if (new URLSearchParams(location.search).has('demo')) {
+    setTimeout(() => showAnnouncement({
+      type: 'gift', big: true, nome: 'LunaDaPista',
+      giftName: 'Disco Ball', coins: 100, overlaySeconds: 10,
+    }), 800);
+  }
+</script>
+</body>
+</html>
