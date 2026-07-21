@@ -150,8 +150,13 @@ export async function respondToComment({ user, text }) {
     'Se o comentário for ofensivo, sexual, perigoso ou propaganda, ' +
     'responda EXATAMENTE com [BLOQUEAR] e mais nada.';
 
+  // A sentinela vale no INÍCIO da resposta (com ou sem colchete) ou entre colchetes em
+  // qualquer lugar — cobre o modelo que explica o motivo depois do [BLOQUEAR]. Buscar
+  // "bloquear" solto em qualquer posição descartava resposta legítima ("vou bloquear
+  // esse spam"); exigir a linha inteira deixaria passar a explicação por engano.
+  const SENTINELA_RE = /^\s*\[?\s*bloquear\b|\[\s*bloquear\s*\]/i;
   const resp = await ask(instruction, { temperature: 0.8, maxTokens: 60 });
-  if (!resp || /bloquear/i.test(resp)) return null;
+  if (!resp || SENTINELA_RE.test(resp)) return null;
   return resp;
 }
 

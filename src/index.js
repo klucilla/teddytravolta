@@ -40,6 +40,10 @@ async function main() {
         obs.showTemporary(config.obs.sceneTalk, a.talkSeconds); // follows/comentários/ocioso: urso falando
       }
     },
+    // O ocioso conta a partir do FIM da fala, não do começo: senão o tempo que o Teddy
+    // passou falando entra na conta e ele emenda "tá todo mundo quieto" logo depois de
+    // uma fala longa (quanto mais longa a frase da IA, mais cedo o ocioso dispara).
+    onDone: () => bump(),
   });
 
   // ===== Meta da live (barra de progresso no overlay) =====

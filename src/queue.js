@@ -212,29 +212,38 @@ export function buildAnnouncement(event) {
     };
   }
 
-  // likes
-  return {
-    type: 'likes',
-    big: false,
-    nome,
-    count: event.count,
-    phrase: pick(LIKES_PHRASES).replace('{nome}', nome),
-    celebrationSeconds: 0,
-    moonwalkSeconds: 8, // cena "moonwalk" (se configurada); estendida até o fim do áudio
-    overlaySeconds: 5,
-  };
+  if (event.type === 'likes') {
+    return {
+      type: 'likes',
+      big: false,
+      nome,
+      count: event.count,
+      phrase: pick(LIKES_PHRASES).replace('{nome}', nome),
+      celebrationSeconds: 0,
+      moonwalkSeconds: 8, // cena "moonwalk" (se configurada); estendida até o fim do áudio
+      overlaySeconds: 5,
+    };
+  }
+
+  // Tipo desconhecido: melhor calar do que anunciar a coisa errada. Antes o ramo de likes
+  // era o fim da função sem guarda, então um tipo novo virava "Chuva de likes!" no overlay
+  // — sem erro no console e sem nada que denunciasse a troca.
+  log('fila', `tipo de evento desconhecido: "${event.type}" (ignorado)`);
+  return null;
 }
 
 export class ThankQueue {
   /**
-   * @param {{ onAnnounce?: (announcement) => void }} hooks
+   * @param {{ onAnnounce?: (announcement) => void, onDone?: (announcement) => void }} hooks
    *   onAnnounce é chamado no INÍCIO de cada agradecimento (para OBS/overlay).
+   *   onDone é chamado quando o áudio TERMINA (inclusive se falhar no meio).
    */
-  constructor({ onAnnounce } = {}) {
+  constructor({ onAnnounce, onDone } = {}) {
     this.items = [];
     this.running = false;
     this.seq = 0;
     this.onAnnounce = onAnnounce || (() => {});
+    this.onDone = onDone || (() => {});
   }
 
   push(event) {
@@ -304,6 +313,7 @@ export class ThankQueue {
 
   async #process(event) {
     const announcement = buildAnnouncement(event);
+    if (!announcement) return; // tipo desconhecido: já foi logado
 
     if (announcement.type === 'comment') {
       // Comentário: a resposta vem da IA (com moderação). Sem resposta => ignora.
@@ -351,20 +361,29 @@ export class ThankQueue {
 
     // A cena temporária (comemoração ou fala) dura pelo menos o tempo dos áudios:
     // o Teddy só volta a dançar quando termina de "falar" (boca do vídeo junto com a voz).
-    const camposCena = ['celebrationSeconds', 'talkSeconds', 'shareSeconds', 'welcomeSeconds', 'moonwalkSeconds'];
-    if (camposCena.some((c) => announcement[c] > 0)) {
+    // O card do overlay entra na mesma conta: a duração dele era só um chute do
+    // buildAnnouncement, então uma frase longa da IA terminava com o card já fora da tela.
+    const camposDuracao = [
+      'celebrationSeconds', 'talkSeconds', 'shareSeconds', 'welcomeSeconds', 'moonwalkSeconds',
+      'overlaySeconds',
+    ];
+    if (camposDuracao.some((c) => announcement[c] > 0)) {
       let total = 0;
       for (const f of audioFiles) total += (await audioDurationSeconds(f)) || 0;
       if (total > 0) {
         const min = Math.ceil(total + 0.5);
-        for (const campo of camposCena) {
+        for (const campo of camposDuracao) {
           if (announcement[campo] > 0) announcement[campo] = Math.max(announcement[campo], min);
         }
       }
     }
 
     this.onAnnounce(announcement);
-    for (const f of audioFiles) await play(f);
+    try {
+      for (const f of audioFiles) await play(f);
+    } finally {
+      this.onDone(announcement); // marca o FIM da fala; ver o bump() do index.js
+    }
     log('fila', `✔ concluído: ${announcement.nome}`);
   }
 }

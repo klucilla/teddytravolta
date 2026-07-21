@@ -92,8 +92,11 @@ export class ObsController {
    */
   async showTemporary(sceneName, seconds) {
     if (!sceneName || seconds <= 0) return;
-    const ok = await this.#setScene(sceneName);
-    if (!ok) return;
+    if (!this.connected) return; // sem OBS não há cena nem rodízio para segurar
+    // A troca pode falhar (cena renomeada/apagada no OBS), mas o timer é armado do mesmo
+    // jeito: é ele que segura o rodízio de danças (#startIdleRotation). Sem isso o urso
+    // trocava de coreografia no meio da fala justamente quando a cena não existia.
+    await this.#setScene(sceneName);
     if (this.celebrationTimer) clearTimeout(this.celebrationTimer);
     this.celebrationTimer = setTimeout(() => {
       this.celebrationTimer = null;
