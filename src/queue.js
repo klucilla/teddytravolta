@@ -36,7 +36,7 @@ const LIKES_PHRASES = [
 
 const SHARE_PHRASES = [
   'Saúde, {nome}! Essa dose é sua!',
-  '{nome} compartilhou! Tim-tim, essa tequila é pra você!',
+  '{nome} compartilhou! Tim-tim, esse martini é pra você!',
   'Valeu por espalhar a festa, {nome}! Um brinde!',
 ];
 
@@ -72,7 +72,51 @@ const QUEUE_PRIORITY = {
   join: 20,
 };
 
+// Validade de cada tipo na fila, em segundos. Com o chat ativo (comentário tem prioridade
+// 80), um "bem-vindo" ou um "valeu por seguir" saía minutos depois, fora de contexto.
+// Presente, meta e desafio não vencem: presente é o que mais importa, e o desafio só é
+// lançado com a fila vazia.
+const QUEUE_TTL = {
+  join: 30,
+  idle: 20,
+  likes: 60,
+  milestone: 60,
+  challenge_win: 60,
+  comment: 90,
+  share: 120,
+  follow: 180,
+};
+
+const MAX_QUEUE = 50;
+
 const pick = (arr) => arr[Math.floor(Math.random() * arr.length)];
+
+// Preenche {nome} e {presente}. A função de troca evita que um "$&" no texto vire padrão
+// especial do String.replace.
+const preencher = (template, vars) => template.replace(/\{(\w+)\}/g, (m, k) => (k in vars ? String(vars[k]) : m));
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/** Remove da fila os itens vencidos (ver QUEUE_TTL) e devolve os removidos. */
+export function retirarVencidos(items, agora = Date.now()) {
+  const vencidos = [];
+  for (let i = items.length - 1; i >= 0; i--) {
+    const ttl = QUEUE_TTL[items[i].event.type];
+    if (ttl && agora - items[i].at > ttl * 1000) vencidos.push(...items.splice(i, 1));
+  }
+  return vencidos.reverse();
+}
+
+/** Índice do próximo item: maior prioridade primeiro; entre iguais, o mais antigo. */
+export function indiceDoProximo(items) {
+  let best = 0;
+  for (let i = 1; i < items.length; i++) {
+    const a = items[i];
+    const b = items[best];
+    if (a.priority > b.priority || (a.priority === b.priority && a.seq < b.seq)) best = i;
+  }
+  return best;
+}
 
 // Vinheta cantada (MP3 do Suno) para presentes grandes, se o arquivo existir.
 let jingleChecked = null;
@@ -100,7 +144,7 @@ export function buildAnnouncement(event) {
       nome,
       giftName: event.giftName,
       coins: event.coins,
-      phrase: template.replace('{nome}', nome).replace('{presente}', event.giftName),
+      phrase: preencher(template, { nome, presente: event.giftName }),
       celebrationSeconds: big ? 8 : 3,
       overlaySeconds: big ? 10 : 5,
     };
@@ -111,7 +155,7 @@ export function buildAnnouncement(event) {
       type: 'follow',
       big: false,
       nome,
-      phrase: pick(FOLLOW_PHRASES).replace('{nome}', nome),
+      phrase: preencher(pick(FOLLOW_PHRASES), { nome }),
       celebrationSeconds: 0,
       talkSeconds: 3, // cena "fala" (se configurada); estendida até o fim do áudio
       overlaySeconds: 4,
@@ -123,7 +167,7 @@ export function buildAnnouncement(event) {
       type: 'join',
       big: false,
       nome,
-      phrase: pick(WELCOME_PHRASES).replace('{nome}', nome),
+      phrase: preencher(pick(WELCOME_PHRASES), { nome }),
       celebrationSeconds: 0,
       welcomeSeconds: 4, // cena "boasvindas" (se configurada); estendida até o fim do áudio
       overlaySeconds: 5,
@@ -135,7 +179,7 @@ export function buildAnnouncement(event) {
       type: 'share',
       big: false,
       nome,
-      phrase: pick(SHARE_PHRASES).replace('{nome}', nome),
+      phrase: preencher(pick(SHARE_PHRASES), { nome }),
       celebrationSeconds: 0,
       shareSeconds: 8, // duração do vídeo do bar; estendida até o fim do áudio
       overlaySeconds: 6,
@@ -218,7 +262,7 @@ export function buildAnnouncement(event) {
       big: false,
       nome,
       count: event.count,
-      phrase: pick(LIKES_PHRASES).replace('{nome}', nome),
+      phrase: preencher(pick(LIKES_PHRASES), { nome }),
       celebrationSeconds: 0,
       moonwalkSeconds: 8, // cena "moonwalk" (se configurada); estendida até o fim do áudio
       overlaySeconds: 5,
@@ -257,10 +301,19 @@ export class ThankQueue {
       log('fila', `descarta boas-vindas de ${event.user} (fila cheia: ${this.items.length})`);
       return;
     }
+    // Um comentário pendente por pessoa: o novo substitui o antigo. Sem isso, quem manda
+    // uma mensagem por segundo monopolizava a fila (comentário tem prioridade alta).
+    if (event.type === 'comment') {
+      const quem = event.id || event.user;
+      const i = this.items.findIndex((it) => it.event.type === 'comment' && (it.event.id || it.event.user) === quem);
+      if (i >= 0) {
+        this.items.splice(i, 1);
+        log('fila', `comentário anterior de ${event.user} substituído pelo novo`);
+      }
+    }
     const priority = QUEUE_PRIORITY[event.type] ?? 30;
     // Teto de segurança: a fila nunca cresce sem limite (enxurrada de eventos).
     // Cheia: um evento mais importante expulsa o menos importante; senão é descartado.
-    const MAX_QUEUE = 50;
     if (this.items.length >= MAX_QUEUE) {
       let lowest = 0;
       for (let i = 1; i < this.items.length; i++) {
@@ -273,7 +326,7 @@ export class ThankQueue {
       const removido = this.items.splice(lowest, 1)[0];
       log('fila', `cheia (${MAX_QUEUE}): ${removido.event.type} sai para ${event.type} entrar`);
     }
-    this.items.push({ event, priority, seq: this.seq++ });
+    this.items.push({ event, priority, seq: this.seq++, at: Date.now() });
     log('fila', `+ ${event.type} de ${event.user || ''} (${this.items.length} na fila)`);
     this.#drain();
   }
@@ -286,15 +339,13 @@ export class ThankQueue {
     return this.running;
   }
 
-  // Escolhe o próximo item: maior prioridade primeiro; entre iguais, o mais antigo.
+  // Escolhe o próximo item válido (descarta os vencidos); null se a fila esvaziou.
   #takeNext() {
-    let best = 0;
-    for (let i = 1; i < this.items.length; i++) {
-      const a = this.items[i];
-      const b = this.items[best];
-      if (a.priority > b.priority || (a.priority === b.priority && a.seq < b.seq)) best = i;
+    for (const v of retirarVencidos(this.items)) {
+      log('fila', `vencido, descartado: ${v.event.type} de ${v.event.user || ''}`);
     }
-    return this.items.splice(best, 1)[0].event;
+    if (this.items.length === 0) return null;
+    return this.items.splice(indiceDoProximo(this.items), 1)[0].event;
   }
 
   async #drain() {
@@ -302,6 +353,7 @@ export class ThankQueue {
     this.running = true;
     while (this.items.length > 0) {
       const event = this.#takeNext();
+      if (!event) break;
       try {
         await this.#process(event);
       } catch (e) {
@@ -357,34 +409,44 @@ export class ThankQueue {
         }
       }
     }
-    audioFiles.push(await synthesize(announcement.phrase));
+    try {
+      audioFiles.push(await synthesize(announcement.phrase));
+    } catch (e) {
+      // Sem voz (Edge TTS fora do ar) o anúncio segue: card, cena e vinheta local ainda
+      // funcionam. Antes a exceção derrubava tudo, até o jingle.mp3 que está no disco.
+      log('fila', `TTS falhou (${e.message}); anunciando sem a fala`);
+    }
 
     // A cena temporária (comemoração ou fala) dura pelo menos o tempo dos áudios:
     // o Teddy só volta a dançar quando termina de "falar" (boca do vídeo junto com a voz).
     // O card do overlay entra na mesma conta: a duração dele era só um chute do
     // buildAnnouncement, então uma frase longa da IA terminava com o card já fora da tela.
-    const camposDuracao = [
-      'celebrationSeconds', 'talkSeconds', 'shareSeconds', 'welcomeSeconds', 'moonwalkSeconds',
-      'overlaySeconds',
-    ];
-    if (camposDuracao.some((c) => announcement[c] > 0)) {
-      let total = 0;
-      for (const f of audioFiles) total += (await audioDurationSeconds(f)) || 0;
-      if (total > 0) {
-        const min = Math.ceil(total + 0.5);
-        for (const campo of camposDuracao) {
-          if (announcement[campo] > 0) announcement[campo] = Math.max(announcement[campo], min);
-        }
+    const duracoes = [];
+    for (const f of audioFiles) duracoes.push((await audioDurationSeconds(f)) || 0);
+    const total = duracoes.reduce((soma, d) => soma + d, 0);
+    if (total > 0) {
+      const camposDuracao = [
+        'celebrationSeconds', 'talkSeconds', 'shareSeconds', 'welcomeSeconds', 'moonwalkSeconds',
+        'overlaySeconds',
+      ];
+      const min = Math.ceil(total + 0.5);
+      for (const campo of camposDuracao) {
+        if (announcement[campo] > 0) announcement[campo] = Math.max(announcement[campo], min);
       }
     }
 
     this.onAnnounce(announcement);
     try {
-      for (const f of audioFiles) await play(f);
+      // Prazo por arquivo: a duração medida + folga (sem medida, o padrão do player)
+      for (let i = 0; i < audioFiles.length; i++) {
+        await play(audioFiles[i], duracoes[i] > 0 ? { maxSeconds: duracoes[i] + 5 } : {});
+      }
+      // Sem nenhum áudio, segura um instante para o card não ser atropelado pelo próximo
+      if (audioFiles.length === 0) await sleep(Math.min(announcement.overlaySeconds || 3, 4) * 1000);
     } finally {
       this.onDone(announcement); // marca o FIM da fala; ver o bump() do index.js
     }
-    log('fila', `✔ concluído: ${announcement.nome}`);
+    log('fila', `✔ concluído: ${announcement.nome || announcement.type}`);
   }
 }
 

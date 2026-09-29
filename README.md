@@ -52,7 +52,7 @@ talking illusion).
 
 ## Stack
 
-- **Node.js 18+** (ESM) · [tiktok-live-connector](https://github.com/zerodytrash/TikTok-Live-Connector) (live events)
+- **Node.js 20+** (ESM) · [tiktok-live-connector](https://github.com/zerodytrash/TikTok-Live-Connector) (live events)
 - **msedge-tts** — free Brazilian Portuguese voice (Edge TTS, no API key)
 - **obs-websocket-js v5** — OBS control · **express + ws** — overlay
 - **ffmpeg/ffplay** — audio playback and video post-production
@@ -61,7 +61,7 @@ talking illusion).
 ## Requirements
 
 - Windows 10/11 (audio playback uses ffplay with a native Windows fallback)
-- [Node.js 18+](https://nodejs.org)
+- [Node.js 20+](https://nodejs.org) (required by `tiktok-live-connector` 2.4)
 - [OBS Studio 30+](https://obsproject.com) (WebSocket is built in)
 - ffmpeg: `winget install Gyan.FFmpeg.Essentials`
 - *(Optional)* [Ollama](https://ollama.com) with `ollama pull qwen2.5:7b-instruct`
@@ -136,6 +136,11 @@ cards — without being on air.
 2. Start your live on TikTok (the connector needs the live to be on air)
 3. `npm start`
 
+If the connection to the live drops, the system reconnects on its own and keeps
+trying (10s, 20s, 40s… up to 1 minute between attempts). At the start of the live the
+console prints the format of the first event of each type, so a format change by
+TikTok or the library shows up right away.
+
 **Streaming to TikTok:** if your account has RTMP access, grab the stream key at
 `livecenter.tiktok.com/producer` (it changes every broadcast) and use it in OBS →
 Settings → Stream → Custom. Without a key, plan B is **TikTok LIVE Studio**: click
@@ -147,12 +152,16 @@ Settings → Stream → Custom. Without a key, plan B is **TikTok LIVE Studio**:
 With `LLM_ENABLED=true` and Ollama running (`qwen2.5:7b-instruct`):
 
 - **Varied phrases**: every thank-you is unique and in character (no repeated lists)
-- **Voice chat**: Teddy answers comments — with **two-layer moderation** (a
-  deterministic filter blocks links/spam/profanity before the LLM) and a configurable
-  throttle
+- **Voice chat**: Teddy answers comments, with **two-layer moderation**: a
+  deterministic filter blocks links, spam and profanity (including disguised forms such
+  as "p0rra") before the LLM, and the LLM's reply goes through the same filter before
+  it is spoken. The **username** of whoever interacts is filtered too: an offensive or
+  spammy name becomes "amigo" (friend). One pending comment per person, and a
+  configurable throttle
 - **Engagement lines**: during quiet moments he strikes up conversation with the audience
 - The model is pre-warmed at startup and kept in memory (`LLM_KEEP_ALIVE`); if Ollama
-  goes down, everything falls back to fixed phrases without breaking
+  goes down, everything falls back to fixed phrases without breaking, and the LLM is
+  paused for 30s so the queue doesn't wait for the timeout on every event
 
 ## Configuration (.env)
 
@@ -169,6 +178,10 @@ Highlights:
 | `CHALLENGE_EVERY_MIN` | Flash-challenge frequency |
 | `LLM_*` | Local LLM: model, timeouts, comment moderation |
 
+Options documented as "0 disables" (`WELCOME_EVERY`, `IDLE_PROMPT_SECONDS`,
+`MILESTONE_EVERY`, `CHALLENGE_EVERY_MIN`, `DANCE_ROTATE_SECONDS`,
+`QUEUE_DROP_WELCOME_AFTER`) really accept `0` since v1.1.0.
+
 > The character speaks Brazilian Portuguese by default (`TTS_VOICE=pt-BR-AntonioNeural`).
 > For another language, set any Edge TTS voice (e.g. `en-US-GuyNeural`) and adapt the
 > phrase lists in `src/queue.js` and the LLM persona in `src/llm.js`.
@@ -184,7 +197,8 @@ Highlights:
   (not even instrumentals/covers). Generate original tracks (Suno with a commercial
   plan) or use royalty-free music (Pixabay Music).
 - **Local by design:** the overlay server binds to `127.0.0.1` by default (set
-  `OVERLAY_HOST` only if OBS runs on another machine of your LAN). **Never expose
+  `OVERLAY_HOST` only if OBS runs on another machine of your LAN), and its WebSocket
+  only accepts the overlay's own page, not other sites open in your browser. **Never expose
   the OBS WebSocket (port 4455) to the internet**, and keep your `.env` private —
   it holds your OBS password. See [SECURITY.md](SECURITY.md).
 - This project is not affiliated with TikTok. The event API used by
@@ -199,9 +213,21 @@ Highlights:
 | Won't connect to the live | The live must be **on air**; check `TIKTOK_USERNAME` (no @) |
 | Blank overlay in OBS | Start the system first, or right-click the source → **Refresh** |
 | LLM ignoring comments | Ollama closed or cold model — see `LLM_TIMEOUT_MS`/`LLM_KEEP_ALIVE` |
-| Likes don't trigger the moonwalk | TikTok delivers like events unpredictably (platform limitation) — that's why the moonwalk is also part of the dance rotation |
+| Likes don't trigger the moonwalk | Up to v1.0.0 every like batch counted as 1 (update). TikTok also delivers likes unpredictably, and the per-person count resets after 5 min without likes; that's why the moonwalk is also part of the dance rotation |
+| On a real live Teddy ignores the chat, thanks the same gift several times or skips the jingle on big gifts | That was the new `tiktok-live-connector` 2.4 event format, misread up to v1.0.0. Update to v1.1.0 (`git pull` + `npm install`) |
+| Challenge won by someone who didn't play | Since v1.1.0 only a comment that is **just** the trigger wins ("TEDDY!!!" wins; "good night Teddy" doesn't) |
 
-## Individual tests
+## Tests
+
+```powershell
+npm test              # automated tests: event format, moderation, queue, challenge
+```
+
+`npm test` builds the live events from the **installed** `tiktok-live-connector`
+schema and fails if it has changed. Run it after any dependency update: the simulator
+can't catch that kind of breakage.
+
+Manual tests, one module at a time:
 
 ```powershell
 npm run test:tiktok   # event simulator (no audio)
@@ -209,6 +235,10 @@ npm run test:tts      # generates and caches one audio clip
 npm run test:queue    # full queue: events -> TTS -> audio
 npm run test:obs      # OBS connection/reconnection
 ```
+
+## Changelog
+
+See [CHANGELOG.md](CHANGELOG.md).
 
 ## License
 

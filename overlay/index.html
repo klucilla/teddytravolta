@@ -226,17 +226,24 @@
   const elPresente = document.getElementById('presente');
 
   let hideTimer = null;
+  let voltaDesafioTimer = null;
+  // Desafio em andamento: se outro card atropelar o do desafio, ele volta enquanto valer
+  let desafio = null; // { dados, ate }
 
   // ===== Banner fixo: instruções em rodízio =====
+  // `se`: só aparece se o recurso estiver ligado (o servidor manda overlay_config ao
+  // conectar). Sem isso o banner prometia "o Teddy responde você" com a IA desligada.
   const MENSAGENS = [
-    '🌹 Manda uma rosa e o Teddy fala seu nome!',
-    '🎁 Presente de 100+ coins = festa completa com vinheta!',
-    '➕ Segue o canal e o Teddy te agradece na hora!',
-    '🥃 Compartilha a live e ganha um brinde do Teddy!',
-    '❤️ Manda likes que o Teddy capricha no moonwalk!',
-    '💬 Comenta aí que o Teddy responde você no chat!',
-    '🕺 Teddy Travolta — o urso mais disco do TikTok',
+    { texto: '🌹 Manda uma rosa e o Teddy fala seu nome!' },
+    { texto: '🎁 Presente de 100+ coins = festa completa com vinheta!' },
+    { texto: '➕ Segue o canal e o Teddy te agradece na hora!', se: 'agradeceFollows' },
+    { texto: '🍸 Compartilha a live e ganha um brinde do Teddy!' },
+    { texto: '❤️ Manda likes que o Teddy capricha no moonwalk!', se: 'agradeceLikes' },
+    { texto: '💬 Comenta aí que o Teddy responde você no chat!', se: 'respondeChat' },
+    { texto: '🕺 Teddy Travolta — o urso mais disco do TikTok' },
   ];
+  let opcoes = {}; // chega do servidor; até lá, mostra tudo
+  const mensagensAtivas = () => MENSAGENS.filter((m) => !m.se || opcoes[m.se] !== false).map((m) => m.texto);
   const banner = document.getElementById('banner');
   let msgIdx = 0;
 
@@ -251,31 +258,38 @@
     }
   }
 
-  setBannerText(MENSAGENS[0]);
+  setBannerText(mensagensAtivas()[0]);
   setInterval(() => {
     banner.classList.add('trocando');
     setTimeout(() => {
-      msgIdx = (msgIdx + 1) % MENSAGENS.length;
-      setBannerText(MENSAGENS[msgIdx]);
+      const lista = mensagensAtivas();
+      msgIdx = (msgIdx + 1) % lista.length;
+      setBannerText(lista[msgIdx]);
       banner.classList.remove('trocando');
     }, 500);
   }, 8000);
 
+  const TIPOS_COM_CARD = ['gift', 'follow', 'share', 'comment', 'join', 'milestone', 'challenge', 'challenge_win', 'meta', 'likes'];
+
   function showAnnouncement(a) {
-    // Fala de engajamento no ocioso: é só o Teddy falando, sem card no overlay.
-    if (a.type === 'idle') return;
+    // Fala de engajamento no ocioso é só o Teddy falando, sem card. Tipo desconhecido
+    // também não ganha card: antes caía no "Chuva de likes!" do último else.
+    if (!TIPOS_COM_CARD.includes(a.type)) return;
     clearTimeout(hideTimer);
+    clearTimeout(voltaDesafioTimer);
+    if (a.type === 'challenge') desafio = { dados: a, ate: Date.now() + (a.overlaySeconds || 60) * 1000 };
+    if (a.type === 'challenge_win') desafio = null;
 
     if (a.type === 'gift') {
       elKicker.textContent = a.big ? '🔥 Presentão! 🔥' : 'Presente!';
       elPresente.innerHTML = '<span class="emoji">🎁</span> ' + escapeHtml(a.giftName || '') +
-        (a.coins ? ' · ' + a.coins + ' coins' : '');
+        (a.coins ? ' · ' + a.coins + (a.coins === 1 ? ' coin' : ' coins') : '');
     } else if (a.type === 'follow') {
       elKicker.textContent = 'Novo seguidor!';
       elPresente.innerHTML = '<span class="emoji">➕</span> entrou pra pista';
     } else if (a.type === 'share') {
       elKicker.textContent = 'Compartilhou a live!';
-      elPresente.innerHTML = '<span class="emoji">🥃</span> ganhou um brinde do Teddy';
+      elPresente.innerHTML = '<span class="emoji">🍸</span> ganhou um brinde do Teddy';
     } else if (a.type === 'comment') {
       elKicker.textContent = 'Respondendo o chat!';
       elPresente.innerHTML = '<span class="emoji">💬</span> ' + escapeHtml(a.commentText || '');
@@ -294,7 +308,7 @@
     } else if (a.type === 'meta') {
       elKicker.textContent = '🎯 Meta batida! 🎯';
       elPresente.innerHTML = '<span class="emoji">🎉</span> valeu, pista! Bora pra próxima!';
-    } else {
+    } else if (a.type === 'likes') {
       elKicker.textContent = 'Chuva de likes!';
       elPresente.innerHTML = '<span class="emoji">🕺</span> moonwalk do Teddy! ' +
         (a.count ? a.count + ' likes' : '');
@@ -311,12 +325,26 @@
     card.classList.add('show');
     if (a.big) card.classList.add('big');
 
-    sparkles(a.big ? 36 : 14);
+    if (!a.reapresentado) sparkles(a.big ? 36 : 14);
 
     const seconds = a.overlaySeconds || 5;
     hideTimer = setTimeout(() => {
       card.classList.remove('show', 'big');
       card.classList.add('hide');
+      if (a.type === 'challenge') {
+        desafio = null; // a janela acabou junto com o card
+      } else if (desafio) {
+        // Outro card atropelou o desafio: ele volta com o tempo que ainda resta
+        const resta = (desafio.ate - Date.now()) / 1000;
+        if (resta > 3) {
+          const dados = desafio.dados;
+          voltaDesafioTimer = setTimeout(() => {
+            showAnnouncement({ ...dados, overlaySeconds: resta - 0.6, reapresentado: true });
+          }, 600);
+        } else {
+          desafio = null;
+        }
+      }
     }, seconds * 1000);
   }
 
@@ -358,6 +386,7 @@
     ws.onmessage = (ev) => {
       try {
         const data = JSON.parse(ev.data);
+        if (data.type === 'overlay_config') { opcoes = data; return; }
         if (data.type === 'meta_progress') { updateMeta(data); return; }
         showAnnouncement(data);
       } catch (e) { console.error(e); }

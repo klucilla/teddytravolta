@@ -1,7 +1,76 @@
 // Conexão com o TikTok Live + modo simulador.
-// Emite eventos normalizados: 'gift', 'follow', 'likes', 'comment', 'connected', 'disconnected'.
+// Emite eventos normalizados: 'gift', 'follow', 'share', 'join', 'likes', 'comment',
+// 'milestone', 'connected', 'disconnected'.
 import { EventEmitter } from 'node:events';
 import { config, log } from './config.js';
+
+// Likes acumulados por pessoa zeram depois deste tempo sem curtir: o moonwalk é para
+// rajada, não para a soma da noite inteira.
+const LIKES_JANELA_MS = 5 * 60 * 1000;
+
+// Reconexão: espera crescente (10s, 20s, 40s...) até este teto, e tenta até conseguir.
+const RECONEXAO_INICIAL_MS = 10000;
+const RECONEXAO_MAX_MS = 60000;
+
+// ---------- Normalização dos eventos da live real ----------
+// A tiktok-live-connector 2.x entrega o protobuf cru do TikTok, e os nomes dos campos mudam
+// entre versões do esquema. Na 2.1.0 era `comment`/`viewerCount`/`likeCount` e o presente
+// vinha achatado; na 2.4.2 (tiktok-live-proto v3) virou `content`/`total`/`count` e o
+// presente foi para `data.gift`. Ler o campo errado não dá erro — dá undefined em silêncio,
+// e o simulador (que já emite eventos normalizados) não percebe. Por isso cada campo tenta
+// o nome novo e cai no antigo, e test/tiktok-mapeamento.test.js confere contra o esquema
+// instalado.
+
+/** Nome de exibição de quem gerou o evento. */
+export function nomeDe(user) {
+  return user?.nickname || user?.displayId || user?.uniqueId || 'amigo';
+}
+
+/** Identificador estável da pessoa (o apelido muda; o id não), ou null. */
+export function idDe(user) {
+  const id = user?.idStr || user?.id || user?.displayId || user?.uniqueId;
+  return id && String(id) !== '0' ? String(id) : null;
+}
+
+/** Presente -> { user, id, giftName, coins, repeatCount }, ou null se ainda não é para agradecer. */
+export function normalizarPresente(data) {
+  const g = data.gift || data.giftDetails || {};
+  const tipo = g.type ?? g.giftType ?? data.giftType;
+  // Presente em sequência (streak) gera um evento a cada repetição; só vale o último
+  // (repeatEnd). Sem isso, um combo de 10 rosas virava uns 11 agradecimentos.
+  const emSequencia = tipo === 1 || g.combo === true;
+  if (emSequencia && !data.repeatEnd) return null;
+  const repeat = Number(data.repeatCount) || 1;
+  const valor = Number(g.diamondCount ?? data.diamondCount) || 1;
+  return {
+    user: nomeDe(data.user),
+    id: idDe(data.user),
+    giftName: g.name || g.giftName || data.giftName || 'presente',
+    coins: valor * repeat,
+    repeatCount: repeat,
+  };
+}
+
+/** Comentário -> { user, id, text }. */
+export function normalizarComentario(data) {
+  return { user: nomeDe(data.user), id: idDe(data.user), text: String(data.content ?? data.comment ?? '') };
+}
+
+/** Espectadores na sala (o esquema novo manda como texto). */
+export function normalizarEspectadores(data) {
+  const n = Number(data.total ?? data.viewerCount ?? 0);
+  return Number.isFinite(n) && n > 0 ? n : 0;
+}
+
+/** Lote de likes -> { user, id, count }. */
+export function normalizarLikes(data) {
+  return { user: nomeDe(data.user), id: idDe(data.user), count: Number(data.count ?? data.likeCount) || 1 };
+}
+
+/** Follow, share e entrada na sala -> { user, id }. */
+export function normalizarPessoa(data) {
+  return { user: nomeDe(data.user), id: idDe(data.user) };
+}
 
 // Nomes claramente fictícios (handles de chat), para o simulador e demonstrações
 const SIM_NAMES = [
@@ -69,13 +138,25 @@ function weightedPick(opcoes) {
 }
 
 export class TikTokSource extends EventEmitter {
-  constructor() {
+  /**
+   * @param {{ criarConexao?: (usuario: string) => object }} [opcoes]
+   *   criarConexao: só para testes (conexão falsa no lugar da TikTokLiveConnection).
+   */
+  constructor({ criarConexao } = {}) {
     super();
     this.connection = null;
     this.simTimer = null;
-    this.likeAccumulator = new Map(); // pessoa -> likes acumulados (dispara aos LIKES_THRESHOLD por pessoa)
+    this.criarConexao = criarConexao || null;
+    this.likeAccumulator = new Map(); // pessoa -> { total, ultimo } (dispara aos LIKES_THRESHOLD por pessoa)
+    this.likeEventos = 0;
     this.currentViewers = 0; // espectadores na sala (vem do ROOM_USER)
     this.lastMilestone = 0; // maior marco de espectadores já comemorado
+    this.stopped = false;
+    this.reconnectTimer = null;
+    this.reconnectAttempt = 0;
+    this.vistos = new Set(); // msgId já processados (a reconexão reenvia o lote inicial)
+    this.formatosVistos = new Set(); // tipos cujo formato já foi logado
+    this.ultimoErroLog = 0;
   }
 
   // Atualiza a contagem de espectadores e comemora ao bater um novo múltiplo de MILESTONE_EVERY.
@@ -99,8 +180,14 @@ export class TikTokSource extends EventEmitter {
   }
 
   stop() {
+    this.stopped = true;
     if (this.simTimer) clearTimeout(this.simTimer);
-    if (this.connection) this.connection.disconnect();
+    if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+    this.reconnectTimer = null;
+    if (this.connection) {
+      this.connection.removeAllListeners?.();
+      Promise.resolve(this.connection.disconnect?.()).catch(() => {});
+    }
   }
 
   // ---------- Modo simulador ----------
@@ -187,76 +274,129 @@ export class TikTokSource extends EventEmitter {
   }
 
   // ---------- Live real ----------
-  async #connectLive() {
+
+  // Mensagem já vista? A reconexão reprocessa o lote inicial da sala, e sem isso os mesmos
+  // presentes eram agradecidos (e somados na meta) de novo.
+  #jaVisto(data) {
+    const id = data?.common?.msgId ?? data?.msgId;
+    if (id === undefined || id === null || String(id) === '0') return false;
+    const chave = String(id);
+    if (this.vistos.has(chave)) return true;
+    this.vistos.add(chave);
+    if (this.vistos.size > 5000) this.vistos.delete(this.vistos.values().next().value);
+    return false;
+  }
+
+  // Loga uma vez as chaves do 1º evento de cada tipo: se a biblioteca mudar o formato de
+  // novo, o log mostra na hora em vez de o Teddy ficar mudo em silêncio.
+  #registrarFormato(tipo, data) {
+    if (this.formatosVistos.has(tipo)) return;
+    this.formatosVistos.add(tipo);
+    log('tiktok', `formato do 1º evento "${tipo}": ${Object.keys(data || {}).join(', ')}`);
+  }
+
+  // Envolve um handler: descarta repetidos, loga o formato e nunca deixa uma exceção escapar.
+  #ouvir(evento, tipo, handler) {
+    this.connection.on(evento, (data) => {
+      try {
+        if (this.#jaVisto(data)) return;
+        this.#registrarFormato(tipo, data);
+        handler(data);
+      } catch (e) {
+        log('tiktok', `erro ao tratar evento "${tipo}": ${e.message}`);
+      }
+    });
+  }
+
+  #onLike(data) {
+    // Por pessoa: quando alguém acumula LIKES_THRESHOLD likes (dentro da janela), dispara o moonwalk.
+    const { user, id, count } = normalizarLikes(data);
+    const key = id || user; // chave estável p/ acumular
+    const agora = Date.now();
+    const anterior = this.likeAccumulator.get(key);
+    const base = anterior && agora - anterior.ultimo <= LIKES_JANELA_MS ? anterior.total : 0;
+    const total = base + count;
+    if (config.likesDebug) {
+      log('tiktok', `[debug like] ${user}: +${count} (acumulado ${total}/${config.likesThreshold}) | count=${data.count} total=${data.total}`);
+    }
+    if (total >= config.likesThreshold) {
+      this.likeAccumulator.delete(key);
+      log('tiktok', `❤️ ${user} acumulou ${total} likes -> moonwalk`);
+      this.emit('likes', { user, id, count: total });
+    } else {
+      this.likeAccumulator.set(key, { total, ultimo: agora });
+    }
+    // Faxina de quem parou de curtir (o Map crescia a noite toda numa live longa)
+    if (++this.likeEventos % 200 === 0) {
+      for (const [k, v] of this.likeAccumulator) {
+        if (agora - v.ultimo > LIKES_JANELA_MS) this.likeAccumulator.delete(k);
+      }
+    }
+  }
+
+  async #connectLive({ reconexao = false } = {}) {
     if (!config.tiktokUsername) {
       throw new Error('TIKTOK_USERNAME não definido no .env (ou use SIMULATOR=true)');
     }
     const { TikTokLiveConnection, WebcastEvent, ControlEvent } = await import('tiktok-live-connector');
-    this.connection = new TikTokLiveConnection(config.tiktokUsername);
+    // A conexão anterior (se houver) não pode mais disparar nada
+    if (this.connection) this.connection.removeAllListeners?.();
+    this.connection = this.criarConexao
+      ? this.criarConexao(config.tiktokUsername)
+      : new TikTokLiveConnection(config.tiktokUsername);
 
-    this.connection.on(WebcastEvent.GIFT, (data) => {
-      // Presentes "streakable" disparam evento a cada repetição;
-      // só agradecer quando a sequência termina (repeatEnd).
-      if (data.giftType === 1 && !data.repeatEnd) return;
-      const coins = (data.diamondCount || 1) * (data.repeatCount || 1);
-      this.emit('gift', {
-        user: data.user?.nickname || data.user?.uniqueId || 'amigo',
-        giftName: data.giftName || data.giftDetails?.giftName || 'presente',
-        coins,
-        repeatCount: data.repeatCount || 1,
-      });
+    this.#ouvir(WebcastEvent.GIFT, 'gift', (data) => {
+      const presente = normalizarPresente(data);
+      if (presente) this.emit('gift', presente);
     });
+    this.#ouvir(WebcastEvent.FOLLOW, 'follow', (data) => this.emit('follow', normalizarPessoa(data)));
+    this.#ouvir(WebcastEvent.SHARE, 'share', (data) => this.emit('share', normalizarPessoa(data)));
+    this.#ouvir(WebcastEvent.MEMBER, 'member', (data) => this.emit('join', normalizarPessoa(data)));
+    this.#ouvir(WebcastEvent.ROOM_USER, 'roomUser', (data) => this.#updateViewers(normalizarEspectadores(data)));
+    this.#ouvir(WebcastEvent.LIKE, 'like', (data) => this.#onLike(data));
+    this.#ouvir(WebcastEvent.CHAT, 'chat', (data) => this.emit('comment', normalizarComentario(data)));
 
-    this.connection.on(WebcastEvent.FOLLOW, (data) => {
-      this.emit('follow', { user: data.user?.nickname || data.user?.uniqueId || 'amigo' });
+    this.connection.on(WebcastEvent.STREAM_END, () => {
+      log('tiktok', 'a live terminou ou foi suspensa pelo TikTok');
     });
-
-    this.connection.on(WebcastEvent.SHARE, (data) => {
-      this.emit('share', { user: data.user?.nickname || data.user?.uniqueId || 'amigo' });
+    // A biblioteca só emite erro se houver ouvinte; sem ele, falhas (inclusive de decodificação,
+    // que denunciariam mudança de formato) sumiam sem rastro. Loga no máximo 1 a cada 30s.
+    this.connection.on(ControlEvent.ERROR, (err) => {
+      if (Date.now() - this.ultimoErroLog < 30000) return;
+      this.ultimoErroLog = Date.now();
+      log('tiktok', `erro na conexão: ${err?.info || ''} ${err?.exception?.message || ''}`.trim());
     });
-
-    this.connection.on(WebcastEvent.MEMBER, (data) => {
-      this.emit('join', { user: data.user?.nickname || data.user?.uniqueId || 'amigo' });
-    });
-
-    this.connection.on(WebcastEvent.ROOM_USER, (data) => {
-      this.#updateViewers(Number(data.viewerCount || 0));
-    });
-
-    this.connection.on(WebcastEvent.LIKE, (data) => {
-      // Por pessoa: quando alguém acumula LIKES_THRESHOLD likes, dispara o moonwalk.
-      const user = data.user?.nickname || data.user?.uniqueId || data.uniqueId || 'amigo';
-      const key = data.user?.uniqueId || data.uniqueId || user; // chave estável p/ acumular
-      const n = data.likeCount || 1;
-      const total = (this.likeAccumulator.get(key) || 0) + n;
-      if (config.likesDebug) {
-        log('tiktok', `[debug like] ${user}: +${n} (acumulado ${total}/${config.likesThreshold}) | likeCount=${data.likeCount} totalLikeCount=${data.totalLikeCount}`);
-      }
-      if (total >= config.likesThreshold) {
-        this.likeAccumulator.set(key, 0);
-        log('tiktok', `❤️ ${user} acumulou ${total} likes -> moonwalk`);
-        this.emit('likes', { user, count: total });
-      } else {
-        this.likeAccumulator.set(key, total);
-      }
-    });
-
-    this.connection.on(WebcastEvent.CHAT, (data) => {
-      this.emit('comment', {
-        user: data.user?.nickname || data.user?.uniqueId || 'amigo',
-        text: data.comment || '',
-      });
-    });
-
     this.connection.on(ControlEvent.DISCONNECTED, () => {
-      log('tiktok', 'Desconectado da live. Tentando reconectar em 10s...');
+      if (this.stopped) return;
+      log('tiktok', 'Desconectado da live.');
       this.emit('disconnected');
-      setTimeout(() => this.#connectLive().catch((e) => log('tiktok', 'Reconexão falhou:', e.message)), 10000);
+      this.#agendarReconexao();
     });
 
     const state = await this.connection.connect();
-    log('tiktok', `Conectado à live de @${config.tiktokUsername} (roomId ${state.roomId})`);
-    this.emit('connected', { mode: 'live', roomId: state.roomId });
+    this.reconnectAttempt = 0;
+    log('tiktok', `${reconexao ? 'Reconectado' : 'Conectado'} à live de @${config.tiktokUsername} (roomId ${state?.roomId})`);
+    this.emit('connected', { mode: 'live', roomId: state?.roomId });
+  }
+
+  // Tenta de novo até conseguir (ou até stop()). Antes era uma tentativa só: se a live ainda
+  // estivesse fora do ar 10s depois da queda, o bot ficava surdo pelo resto da noite enquanto
+  // o OBS seguia transmitindo.
+  #agendarReconexao() {
+    if (this.stopped || this.reconnectTimer) return;
+    const espera = Math.min(RECONEXAO_INICIAL_MS * 2 ** this.reconnectAttempt, RECONEXAO_MAX_MS);
+    this.reconnectAttempt++;
+    log('tiktok', `tentando reconectar em ${espera / 1000}s (tentativa ${this.reconnectAttempt})`);
+    this.reconnectTimer = setTimeout(async () => {
+      this.reconnectTimer = null;
+      if (this.stopped) return;
+      try {
+        await this.#connectLive({ reconexao: true });
+      } catch (e) {
+        log('tiktok', `reconexão falhou: ${e.message}`);
+        this.#agendarReconexao();
+      }
+    }, espera);
   }
 }
 

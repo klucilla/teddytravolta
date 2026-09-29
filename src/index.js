@@ -1,11 +1,16 @@
 // Orquestrador: TikTok Live -> fila de agradecimentos -> TTS + áudio + OBS + overlay.
 import { config, log } from './config.js';
+import { DESAFIOS, venceuDesafio } from './desafio.js';
 import { warmup } from './llm.js';
+import { stopPlayback } from './player.js';
 import { cleanupOldCache } from './tts.js';
 import { ObsController } from './obs.js';
 import { OverlayServer } from './overlay-server.js';
 import { ThankQueue } from './queue.js';
 import { TikTokSource } from './tiktok.js';
+
+// Uma promessa rejeitada sem tratamento não pode passar em silêncio numa live de horas
+process.on('unhandledRejection', (e) => log('teddy', `promessa rejeitada sem tratamento: ${e?.stack || e}`));
 
 async function main() {
   log('teddy', '🕺🐻 Teddy Travolta Live iniciando...');
@@ -18,20 +23,34 @@ async function main() {
   await obs.connect(); // não bloqueia se OBS estiver fechado
 
   warmup(); // pré-carrega o modelo da IA em paralelo (não bloqueia o início)
-  cleanupOldCache(); // remove áudios TTS antigos do cache (melhor-esforço, em paralelo)
+  // Remove áudios TTS antigos do cache antes dos eventos começarem (é rápido), para a
+  // limpeza não apagar um arquivo que a fila acabou de reusar.
+  await cleanupOldCache();
 
   // Marca quando algo aconteceu por último (para as falas de engajamento no ocioso)
   let lastActivity = Date.now();
   const bump = () => { lastActivity = Date.now(); };
+  const intervalos = []; // para o encerramento limpar
+
+  // ===== Desafio-relâmpago: o 1º a mandar o gatilho no chat vence =====
+  // A janela só abre quando o Teddy ANUNCIA (onAnnounce). Antes abria ao entrar na fila,
+  // antes da fala, e quem comentasse o gatilho nesse intervalo vencia sem ter ouvido.
+  let desafioAtivo = null; // { trigger, until }
+  let desafioPendenteDesde = 0; // lançado, esperando a vez na fila (0 = nenhum)
 
   const queue = new ThankQueue({
     onAnnounce: (a) => {
       bump();
+      if (a.type === 'challenge') {
+        desafioPendenteDesde = 0;
+        desafioAtivo = { trigger: a.trigger, until: Date.now() + config.challenge.windowSec * 1000 };
+        log('desafio', `valendo: "${a.trigger}" por ${config.challenge.windowSec}s`);
+      }
       overlay.broadcast(a);
       if (a.celebrationSeconds > 0) {
         obs.celebrate(a.celebrationSeconds); // presentes/marcos: festa
       } else if (a.shareSeconds > 0 && config.obs.sceneShare) {
-        obs.showTemporary(config.obs.sceneShare, a.shareSeconds); // share: tequila no bar
+        obs.showTemporary(config.obs.sceneShare, a.shareSeconds); // share: brinde de martini no bar
       } else if (a.welcomeSeconds > 0 && config.obs.sceneWelcome) {
         obs.showTemporary(config.obs.sceneWelcome, a.welcomeSeconds); // entrada: boas-vindas
       } else if (a.moonwalkSeconds > 0 && config.obs.sceneMoonwalk) {
@@ -43,7 +62,10 @@ async function main() {
     // O ocioso conta a partir do FIM da fala, não do começo: senão o tempo que o Teddy
     // passou falando entra na conta e ele emenda "tá todo mundo quieto" logo depois de
     // uma fala longa (quanto mais longa a frase da IA, mais cedo o ocioso dispara).
-    onDone: () => bump(),
+    onDone: (a) => {
+      bump();
+      if (a.type === 'challenge') desafioPendenteDesde = 0;
+    },
   });
 
   // ===== Meta da live (barra de progresso no overlay) =====
@@ -68,31 +90,38 @@ async function main() {
     }
     metaBroadcast();
   };
-  if (metaAtiva) setInterval(metaBroadcast, 20000); // reenvia p/ overlays que conectarem depois
+  if (metaAtiva) intervalos.push(setInterval(metaBroadcast, 20000)); // reenvia p/ overlays que conectarem depois
 
-  // ===== Desafio-relâmpago: o 1º a mandar o gatilho no chat vence =====
-  const DESAFIOS = [
-    { trigger: '🌹', anuncio: 'Desafio-relâmpago! O primeiro que mandar o emoji de rosa no chat ganha um salve especial do Teddy!' },
-    { trigger: 'TRAVOLTA', anuncio: 'Desafio-relâmpago! O primeiro que escrever TRAVOLTA no chat ganha um salve especial!' },
-    { trigger: '🕺', anuncio: 'Desafio! Manda o emoji do dançarino no chat — o primeiro leva um salve do Teddy!' },
-    { trigger: 'TEDDY', anuncio: 'Desafio! O primeiro que gritar TEDDY no chat ganha um salve especial!' },
-  ];
-  let desafioAtivo = null; // { trigger, until }
   if (config.challenge.everyMin > 0) {
-    setInterval(() => {
+    intervalos.push(setInterval(() => {
       // Expira desafio antigo mesmo sem comentários (senão nunca lança outro)
       if (desafioAtivo && Date.now() > desafioAtivo.until) {
         log('desafio', `expirou sem vencedor ("${desafioAtivo.trigger}")`);
         desafioAtivo = null;
       }
-      if (desafioAtivo || queue.size > 0 || queue.busy) return; // só lança em momento tranquilo
+      // Rede de segurança: um anúncio que nunca aconteceu não pode travar os próximos
+      if (desafioPendenteDesde && Date.now() - desafioPendenteDesde > 120000) desafioPendenteDesde = 0;
+      if (desafioAtivo || desafioPendenteDesde || queue.size > 0 || queue.busy) return; // só em momento tranquilo
       const d = DESAFIOS[Math.floor(Math.random() * DESAFIOS.length)];
-      desafioAtivo = { trigger: d.trigger.toLowerCase(), until: Date.now() + config.challenge.windowSec * 1000 };
+      desafioPendenteDesde = Date.now();
       bump();
       queue.push({ type: 'challenge', trigger: d.trigger, anuncio: d.anuncio, windowSec: config.challenge.windowSec });
-      log('desafio', `lançado: "${d.trigger}" valendo por ${config.challenge.windowSec}s`);
-    }, config.challenge.everyMin * 60 * 1000);
+      log('desafio', `lançado: "${d.trigger}" (a janela abre quando o Teddy anunciar)`);
+    }, config.challenge.everyMin * 60 * 1000));
   }
+
+  // Follow e share: um agradecimento por pessoa (share: de novo só depois de 10 min).
+  // Seguir e deixar de seguir em sequência virava uma metralhadora de "valeu" com o nome
+  // da pessoa — e inflava a meta de seguidores. Só vale para eventos com id (live real).
+  const jaAgradecidos = { follow: new Map(), share: new Map() };
+  const REPETE_APOS_MS = { follow: Infinity, share: 10 * 60 * 1000 };
+  const primeiraVez = (tipo, ev) => {
+    if (!ev.id) return true;
+    const ultimo = jaAgradecidos[tipo].get(ev.id);
+    if (ultimo && Date.now() - ultimo < REPETE_APOS_MS[tipo]) return false;
+    jaAgradecidos[tipo].set(ev.id, Date.now());
+    return true;
+  };
 
   const tiktok = new TikTokSource();
   tiktok.on('gift', (g) => {
@@ -102,14 +131,19 @@ async function main() {
   });
   tiktok.on('follow', (f) => {
     bump();
+    if (!primeiraVez('follow', f)) return;
     if (config.thankFollows) queue.push({ type: 'follow', ...f });
     if (config.meta.type === 'followers') metaAdd(1);
   });
-  tiktok.on('share', (s) => { bump(); queue.push({ type: 'share', ...s }); });
-  // Boas-vindas só 1 a cada N entradas (lives movimentadas têm MUITAS entradas)
+  tiktok.on('share', (s) => {
+    bump();
+    if (primeiraVez('share', s)) queue.push({ type: 'share', ...s });
+  });
+  // Boas-vindas só 1 a cada N entradas (lives movimentadas têm MUITAS entradas).
+  // Entrar na sala NÃO conta como interação para o ocioso: numa live com gente entrando o
+  // tempo todo, o Teddy nunca puxava papo, mesmo com o chat parado.
   let joinCount = 0;
   tiktok.on('join', (j) => {
-    bump();
     if (config.welcomeEvery <= 0) return;
     joinCount++;
     if (joinCount % config.welcomeEvery === 0) queue.push({ type: 'join', ...j });
@@ -131,7 +165,7 @@ async function main() {
       if (Date.now() > desafioAtivo.until) {
         log('desafio', `expirou sem vencedor ("${desafioAtivo.trigger}")`);
         desafioAtivo = null;
-      } else if ((c.text || '').toLowerCase().includes(desafioAtivo.trigger)) {
+      } else if (venceuDesafio(c.text, desafioAtivo.trigger)) {
         log('desafio', `🏆 vencedor: ${c.user}`);
         desafioAtivo = null;
         queue.push({ type: 'challenge_win', ...c });
@@ -150,19 +184,19 @@ async function main() {
   log('teddy', '✅ tudo pronto! Aguardando eventos...');
 
   // Falas de engajamento: se ninguém interagir por IDLE_PROMPT_SECONDS, o Teddy puxa papo.
-  let idleTimer = null;
   if (config.idlePromptSeconds > 0) {
-    idleTimer = setInterval(() => {
+    intervalos.push(setInterval(() => {
       if (queue.size === 0 && !queue.busy && Date.now() - lastActivity >= config.idlePromptSeconds * 1000) {
         bump();
         queue.push({ type: 'idle' });
       }
-    }, 5000);
+    }, 5000));
   }
 
   const shutdown = async () => {
     log('teddy', 'encerrando...');
-    if (idleTimer) clearInterval(idleTimer);
+    for (const t of intervalos) clearInterval(t);
+    stopPlayback(); // o ffplay em andamento não pode ficar falando depois do Ctrl+C
     tiktok.stop();
     overlay.stop();
     await obs.stop();

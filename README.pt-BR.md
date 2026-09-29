@@ -51,7 +51,7 @@ personagem no vídeo se mexe junto com a voz — ilusão de fala estilo VTuber).
 
 ## Stack
 
-- **Node.js 18+** (ESM) · [tiktok-live-connector](https://github.com/zerodytrash/TikTok-Live-Connector) (eventos da live)
+- **Node.js 20+** (ESM) · [tiktok-live-connector](https://github.com/zerodytrash/TikTok-Live-Connector) (eventos da live)
 - **msedge-tts** — voz pt-BR gratuita (Edge TTS, sem API key)
 - **obs-websocket-js v5** — controle do OBS · **express + ws** — overlay
 - **ffmpeg/ffplay** — áudio e pós-produção de vídeo
@@ -60,7 +60,7 @@ personagem no vídeo se mexe junto com a voz — ilusão de fala estilo VTuber).
 ## Requisitos
 
 - Windows 10/11 (o player de áudio usa ffplay com fallback nativo do Windows)
-- [Node.js 18+](https://nodejs.org)
+- [Node.js 20+](https://nodejs.org) (exigência da `tiktok-live-connector` 2.4)
 - [OBS Studio 30+](https://obsproject.com) (WebSocket já vem embutido)
 - ffmpeg: `winget install Gyan.FFmpeg.Essentials`
 - *(Opcional)* [Ollama](https://ollama.com) com `ollama pull qwen2.5:7b-instruct`
@@ -133,6 +133,11 @@ no overlay — sem precisar estar ao vivo.
 2. Inicie a live no TikTok (o conector precisa da live aberta)
 3. `npm start`
 
+Se a conexão com a live cair, o sistema reconecta sozinho e continua tentando (10s,
+20s, 40s… até 1 minuto entre as tentativas). No começo da live, o console mostra o
+formato do 1º evento de cada tipo: se o TikTok ou a biblioteca mudarem o formato, dá
+para ver na hora.
+
 **Transmitindo para o TikTok:** se sua conta tem acesso RTMP, pegue a chave em
 `livecenter.tiktok.com/producer` (ela muda a cada transmissão) e use em OBS →
 Configurações → Transmissão → Personalizado. Sem chave, o plano B é o **TikTok LIVE
@@ -144,11 +149,15 @@ câmera "OBS Virtual Camera" (1080×1920) com captura do som do sistema.
 Com `LLM_ENABLED=true` e o Ollama rodando (`qwen2.5:7b-instruct`):
 
 - **Frases variadas**: cada agradecimento é único, no personagem (nada de lista repetida)
-- **Chat com voz**: o Teddy responde comentários — com **moderação em duas camadas**
-  (filtro determinístico barra links/spam/palavrões antes da IA) e freio configurável
+- **Chat com voz**: o Teddy responde comentários, com **moderação em duas camadas**:
+  um filtro determinístico barra links, spam e palavrões (inclusive disfarçados, como
+  "p0rra") antes da IA, e a resposta da IA passa pelo mesmo filtro antes de virar voz.
+  O **apelido** de quem interage também é filtrado: nome ofensivo ou de spam vira
+  "amigo". Um comentário pendente por pessoa, e o freio é configurável
 - **Falas de engajamento**: nos momentos parados, ele puxa papo com o público
 - O modelo é pré-aquecido no start e mantido em memória (`LLM_KEEP_ALIVE`); se o
-  Ollama cair, tudo volta ao fallback de frases fixas sem quebrar
+  Ollama cair, tudo volta ao fallback de frases fixas sem quebrar, e a IA fica em pausa
+  por 30s para a fila não esperar o timeout a cada evento
 
 ## Configuração (.env)
 
@@ -164,6 +173,10 @@ Veja o [.env.example](.env.example) — todas as opções estão comentadas. Des
 | `CHALLENGE_EVERY_MIN` | Frequência do desafio-relâmpago |
 | `LLM_*` | IA local: modelo, timeouts, moderação de comentários |
 
+As opções documentadas como "0 desliga" (`WELCOME_EVERY`, `IDLE_PROMPT_SECONDS`,
+`MILESTONE_EVERY`, `CHALLENGE_EVERY_MIN`, `DANCE_ROTATE_SECONDS`,
+`QUEUE_DROP_WELCOME_AFTER`) aceitam `0` de verdade a partir da v1.1.0.
+
 ## ⚠️ Avisos importantes
 
 - **Política do TikTok sobre conteúdo pré-gravado:** lives compostas só de vídeo em
@@ -175,7 +188,8 @@ Veja o [.env.example](.env.example) — todas as opções estão comentadas. Des
   conhecidas (nem instrumentais/covers). Gere trilhas originais (Suno com plano
   comercial) ou use royalty-free (Pixabay Music).
 - **Local por padrão:** o servidor do overlay escuta só em `127.0.0.1` (defina
-  `OVERLAY_HOST` apenas se o OBS rodar em outra máquina da sua rede). **Nunca
+  `OVERLAY_HOST` apenas se o OBS rodar em outra máquina da sua rede), e o WebSocket
+  dele só aceita a própria página do overlay, não outros sites abertos no navegador. **Nunca
   exponha o WebSocket do OBS (porta 4455) à internet**, e mantenha seu `.env`
   privado — ele guarda a senha do OBS. Veja o [SECURITY.md](SECURITY.md).
 - Este projeto não é afiliado ao TikTok. A API de eventos usada pela
@@ -190,9 +204,21 @@ Veja o [.env.example](.env.example) — todas as opções estão comentadas. Des
 | Não conecta na live | A live precisa estar **ao vivo**; confira o `TIKTOK_USERNAME` (sem @) |
 | Overlay em branco no OBS | Rode o sistema antes, ou botão direito na fonte → **Atualizar** |
 | Comentários ignorados pela IA | Ollama fechado ou modelo frio — veja `LLM_TIMEOUT_MS`/`LLM_KEEP_ALIVE` |
-| Likes não disparam o moonwalk | O TikTok envia eventos de like de forma imprevisível (limitação da plataforma) — por isso o moonwalk também entra no rodízio de danças |
+| Likes não disparam o moonwalk | Até a v1.0.0 cada lote de likes contava como 1 (atualize). O TikTok também envia likes de forma imprevisível, e o acúmulo por pessoa zera após 5 min sem curtir; por isso o moonwalk também entra no rodízio de danças |
+| Na live real o Teddy não responde o chat, agradece o mesmo presente várias vezes ou não toca a vinheta no presentão | Era o formato novo da `tiktok-live-connector` 2.4, lido errado até a v1.0.0. Atualize para a v1.1.0 (`git pull` + `npm install`) |
+| Desafio vencido por quem não participou | Desde a v1.1.0 vale só o comentário que é **só** o gatilho ("TEDDY!!!" vale; "boa noite Teddy" não) |
 
-## Testes individuais
+## Testes
+
+```powershell
+npm test              # testes automáticos: formato dos eventos, moderação, fila, desafio
+```
+
+O `npm test` monta os eventos da live a partir do esquema **instalado** da
+`tiktok-live-connector` e falha se ele tiver mudado. Rode depois de qualquer
+atualização de dependências: o simulador não percebe esse tipo de quebra.
+
+Testes manuais, módulo por módulo:
 
 ```powershell
 npm run test:tiktok   # simulador de eventos (sem áudio)
@@ -200,6 +226,10 @@ npm run test:tts      # gera e cacheia um áudio
 npm run test:queue    # fila completa: eventos -> TTS -> áudio
 npm run test:obs      # conexão/reconexão com o OBS
 ```
+
+## Histórico de versões
+
+Veja o [CHANGELOG.md](CHANGELOG.md).
 
 ## Licença
 

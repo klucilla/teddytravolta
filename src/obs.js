@@ -34,6 +34,13 @@ export class ObsController {
       log('obs', `cena atual: ${currentProgramSceneName}`);
       this.currentDance = currentProgramSceneName;
       this.#startIdleRotation();
+      // Se a conexão caiu no meio de uma comemoração, o timer de volta disparou com o OBS
+      // fora e a cena ficou presa (com uma cena de dança só, nem o rodízio a tirava de lá).
+      // Só mexe em cena que é nossa: se o OBS estiver numa cena de abertura/pausa, respeita.
+      if (!this.celebrationTimer && this.#cenasTemporarias().includes(currentProgramSceneName)) {
+        log('obs', `reconectou na cena temporária "${currentProgramSceneName}"; voltando para a dança`);
+        await this.#goToDance();
+      }
     } catch (e) {
       this.connected = false;
       log('obs', `OBS indisponível (${e.message || e.code}). Sistema segue sem OBS; nova tentativa em ${RECONNECT_MS / 1000}s`);
@@ -96,12 +103,22 @@ export class ObsController {
     // A troca pode falhar (cena renomeada/apagada no OBS), mas o timer é armado do mesmo
     // jeito: é ele que segura o rodízio de danças (#startIdleRotation). Sem isso o urso
     // trocava de coreografia no meio da fala justamente quando a cena não existia.
-    await this.#setScene(sceneName);
+    // Arma ANTES de trocar: se o timer anterior vencesse durante o await, a volta para a
+    // dança chegava ao OBS depois da cena nova e o urso falava dançando.
     if (this.celebrationTimer) clearTimeout(this.celebrationTimer);
     this.celebrationTimer = setTimeout(() => {
       this.celebrationTimer = null;
       this.#goToDance(); // volta para uma dança (sorteada entre as variações)
     }, seconds * 1000);
+    await this.#setScene(sceneName);
+  }
+
+  // Cenas que o sistema usa só de passagem (as que não estão no rodízio de dança).
+  #cenasTemporarias() {
+    const { sceneCelebration, sceneTalk, sceneShare, sceneWelcome, sceneMoonwalk, danceScenes } = config.obs;
+    return [sceneCelebration, sceneTalk, sceneShare, sceneWelcome, sceneMoonwalk]
+      .filter(Boolean)
+      .filter((s) => !danceScenes.includes(s));
   }
 
   /** Atalho: cena de comemoração (presentes). */
