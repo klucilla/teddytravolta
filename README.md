@@ -209,6 +209,8 @@ Options documented as "0 disables" (`WELCOME_EVERY`, `IDLE_PROMPT_SECONDS`,
 | Problem | Fix |
 |---|---|
 | No audio | Check Windows' default output device; run `npm run test:tts` |
+| `Edge TTS WebSocket error: Unexpected server response: 403` | Microsoft changed the Edge TTS protocol and rejects old `msedge-tts` versions. Update the project (`git pull` + `npm install`; v1.1.1 requires 2.1.1+). If it happens again, `npm update msedge-tts` |
+| `spawn ffmpeg ENOENT` or "ffplay não encontrado" | FFmpeg is not on your PATH. Reinstall it with `winget install Gyan.FFmpeg.Essentials` and open a new terminal. Without it the system runs, but without the chant and without measuring speech duration |
 | `OBS indisponível (ECONNREFUSED)` | OBS closed or WebSocket disabled |
 | Won't connect to the live | The live must be **on air**; check `TIKTOK_USERNAME` (no @) |
 | Blank overlay in OBS | Start the system first, or right-click the source → **Refresh** |

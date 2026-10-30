@@ -2,6 +2,22 @@
 
 **🇺🇸 English** · [🇧🇷 Português](#-português)
 
+## v1.1.1 — 2026-10-30
+
+### Fixed
+- **Teddy's voice stopped working**: Microsoft's Edge TTS service started rejecting
+  `msedge-tts` 2.0.7 (`Unexpected server response: 403`). Updated to 2.1.1, which uses
+  the new connection protocol; the minimum required version is now 2.1.1.
+
+### Security
+- Dependency updates, including the three open Dependabot pull requests (#3, #4, #5),
+  at newer versions than the ones they proposed:
+  - `proxy-addr` 2.0.8 (critical: IP spoofing via IPv4-mapped IPv6);
+  - `axios` 1.21.0 and `follow-redirects` 1.16.2;
+  - `body-parser` 1.20.9 (high: denial of service with compressed bodies);
+  - `qs` 6.16.2 (moderate: denial of service).
+- `npm audit`: 0 vulnerabilities.
+
 ## v1.1.0 — 2026-09-29
 
 A reliability release. The headline fix: **on a real live, v1.0.0 misread most TikTok
@@ -98,6 +114,22 @@ First public release.
 ---
 
 ## 🇧🇷 Português
+
+## v1.1.1 — 2026-10-30
+
+### Corrigido
+- **A voz do Teddy parou**: o serviço Edge TTS da Microsoft passou a recusar a
+  `msedge-tts` 2.0.7 (`Unexpected server response: 403`). Atualizada para a 2.1.1, que
+  usa o protocolo de conexão novo; a versão mínima exigida agora é a 2.1.1.
+
+### Segurança
+- Atualização de dependências, incluindo os três pull requests abertos do Dependabot
+  (#3, #4, #5), em versões mais novas que as propostas por eles:
+  - `proxy-addr` 2.0.8 (crítica: falsificação de IP via IPv6 mapeado em IPv4);
+  - `axios` 1.21.0 e `follow-redirects` 1.16.2;
+  - `body-parser` 1.20.9 (alta: negação de serviço com corpo comprimido);
+  - `qs` 6.16.2 (moderada: negação de serviço).
+- `npm audit`: 0 vulnerabilidades.
 
 ## v1.1.0 — 2026-09-29
 

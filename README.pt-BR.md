@@ -200,6 +200,8 @@ As opções documentadas como "0 desliga" (`WELCOME_EVERY`, `IDLE_PROMPT_SECONDS
 | Problema | Solução |
 |---|---|
 | Sem áudio | Confira o dispositivo de saída padrão do Windows; rode `npm run test:tts` |
+| `Edge TTS WebSocket error: Unexpected server response: 403` | A Microsoft mudou o protocolo do Edge TTS e recusa versões antigas da `msedge-tts`. Atualize o projeto (`git pull` + `npm install`; a v1.1.1 exige a 2.1.1+). Se voltar a acontecer, `npm update msedge-tts` |
+| `spawn ffmpeg ENOENT` ou "ffplay não encontrado" | O FFmpeg não está no PATH. Reinstale com `winget install Gyan.FFmpeg.Essentials` e abra um terminal novo. Sem ele o sistema roda, mas sem bordão e sem medir a duração das falas |
 | `OBS indisponível (ECONNREFUSED)` | OBS fechado ou WebSocket desativado |
 | Não conecta na live | A live precisa estar **ao vivo**; confira o `TIKTOK_USERNAME` (sem @) |
 | Overlay em branco no OBS | Rode o sistema antes, ou botão direito na fonte → **Atualizar** |
